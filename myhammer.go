@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
 	"math/rand"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 import _ "database/sql"
@@ -85,6 +88,17 @@ func run(dsn string, workers int) {
 		panic(err)
 	}
 
+
+	//
+	ctx, cancel := context.WithCancel(context.Background())
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Println("Interrupt received. Stopping workers.")
+		cancel()
+	}()
+
 	// Start workers
 	wg := &sync.WaitGroup{}
 	responses := make(chan int64)
@@ -92,7 +106,7 @@ func run(dsn string, workers int) {
 
 	for i := 0; i < workers; i++{
 		wg.Add(1)
-		go hammer(dsn, i, responses, wg)
+		go hammer(dsn, i, responses, ctx, wg)
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -108,7 +122,7 @@ func run(dsn string, workers int) {
 	fmt.Printf("Program exited. Max key = %d\n", max)
 }
 
-func hammer(dsn string, worker int, responses chan int64, wg *sync.WaitGroup) {
+func hammer(dsn string, worker int, responses chan int64, ctx context.Context, wg *sync.WaitGroup) {
 	fmt.Println("Starting request loop ...")
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -123,21 +137,27 @@ func hammer(dsn string, worker int, responses chan int64, wg *sync.WaitGroup) {
 	defer stmt.Close()
 
 	value := 0
-	for {
-		result, err := stmt.Exec(worker, value)
-		if err != nil {
-			fmt.Printf("error: %v, stopping worker %d\n", err, worker)
-			break
-		}
-		last, err := result.LastInsertId()
-		if err != nil {
-			fmt.Printf("error: %v, stopping worker %d\n", err, worker)
-			break
-		}
+	loop: for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("cancelled: stopping worker %d\n", worker)
+			break loop
+		default:
+			result, err := stmt.Exec(worker, value)
+			if err != nil {
+				fmt.Printf("error: %v, stopping worker %d\n", err, worker)
+				break loop
+			}
+			last, err := result.LastInsertId()
+			if err != nil {
+				fmt.Printf("error: %v, stopping worker %d\n", err, worker)
+				break loop
+			}
 
-		fmt.Printf("worker=%d value=%d key=%d\n", worker, value, last)
-		responses <- last
-		value++
+			fmt.Printf("worker=%d value=%d key=%d\n", worker, value, last)
+			responses <- last
+			value++
+		}
 	}
 
 	wg.Done()
