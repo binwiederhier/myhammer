@@ -29,13 +29,18 @@ func main() {
 		port := flags.Int("P", 3306, "Port")
 		user := flags.String("u", "root", "User")
 		pass := flags.String("p", "", "Password")
+		prefix := flags.String("prefix", "", "Query prefix")
 
 		if err := flags.Parse(os.Args[2:]); err != nil {
 			panic(err)
 		}
 
+		if *prefix != "" {
+			*prefix += " "
+		}
+
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", *user, *pass, *host, *port)
-		clean(dsn)
+		clean(dsn, *prefix)
 	} else if os.Args[1] == "run" {
 		flags := flag.NewFlagSet("run", flag.ExitOnError)
 		workers := flags.Int("workers", 20, "Number of concurrent workers")
@@ -43,34 +48,39 @@ func main() {
 		port := flags.Int("P", 3306, "Port")
 		user := flags.String("u", "root", "User")
 		pass := flags.String("p", "", "Password")
+		prefix := flags.String("prefix", "", "Query prefix")
 
 		if err := flags.Parse(os.Args[2:]); err != nil {
 			panic(err)
 		}
 
+		if *prefix != "" {
+			*prefix += " "
+		}
+
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", *user, *pass, *host, *port)
-		clean(dsn)
-		run(dsn, *workers)
+		clean(dsn, *prefix)
+		run(dsn, *prefix, *workers)
 	} else {
 		fmt.Println("Syntax: myhammer (clean|run)")
 		os.Exit(1)
 	}
 }
 
-func clean(dsn string) {
+func clean(dsn string, prefix string) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec("drop database if exists myhammer")
+	_, err = db.Exec(fmt.Sprintf("%sdrop database if exists myhammer", prefix))
 	if err != nil {
 		panic(err)
 	}
 }
 
-func run(dsn string, workers int) {
+func run(dsn string, prefix string, workers int) {
 	// Create db and table
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -78,16 +88,15 @@ func run(dsn string, workers int) {
 	}
 	defer db.Close()
 
-	_, err = db.Exec("create database if not exists myhammer")
+	_, err = db.Exec(fmt.Sprintf("%screate database if not exists myhammer", prefix))
 	if err != nil {
 		panic(err)
 	}
 
-	_, err = db.Exec("create table if not exists myhammer.t1 (k BIGINT AUTO_INCREMENT PRIMARY KEY, worker BIGINT, value BIGINT)")
+	_, err = db.Exec(fmt.Sprintf("%screate table if not exists myhammer.t1 (k BIGINT AUTO_INCREMENT PRIMARY KEY, worker BIGINT, value BIGINT)", prefix))
 	if err != nil {
 		panic(err)
 	}
-
 
 	//
 	ctx, cancel := context.WithCancel(context.Background())
@@ -106,7 +115,7 @@ func run(dsn string, workers int) {
 
 	for i := 0; i < workers; i++{
 		wg.Add(1)
-		go hammer(dsn, i, responses, ctx, wg)
+		go hammer(dsn, prefix, i, responses, ctx, wg)
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -122,7 +131,7 @@ func run(dsn string, workers int) {
 	fmt.Printf("Program exited. Max key = %d\n", max)
 }
 
-func hammer(dsn string, worker int, responses chan int64, ctx context.Context, wg *sync.WaitGroup) {
+func hammer(dsn string, prefix string, worker int, responses chan int64, ctx context.Context, wg *sync.WaitGroup) {
 	fmt.Println("Starting request loop ...")
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -130,7 +139,7 @@ func hammer(dsn string, worker int, responses chan int64, ctx context.Context, w
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare("insert into myhammer.t1 (worker, value) values (?, ?)")
+	stmt, err := db.Prepare(fmt.Sprintf("%sinsert into myhammer.t1 (worker, value) values (?, ?)", prefix))
 	if err != nil {
 		panic(err)
 	}
