@@ -139,12 +139,6 @@ func hammer(dsn string, prefix string, worker int, responses chan int64, ctx con
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare(fmt.Sprintf("%sinsert into myhammer.t1 (worker, value) values (?, ?)", prefix))
-	if err != nil {
-		panic(err)
-	}
-	defer stmt.Close()
-
 	value := 0
 	loop: for {
 		select {
@@ -152,17 +146,26 @@ func hammer(dsn string, prefix string, worker int, responses chan int64, ctx con
 			fmt.Printf("cancelled: stopping worker %d\n", worker)
 			break loop
 		default:
+			stmt, err := db.Prepare(fmt.Sprintf("%sinsert into myhammer.t1 (worker, value) values (?, ?)", prefix))
+			if err != nil {
+				fmt.Printf("error preparing statement in worker %d: %v\n", worker, err)
+				continue loop
+			}
+
 			result, err := stmt.Exec(worker, value)
 			if err != nil {
-				fmt.Printf("error: %v, stopping worker %d\n", err, worker)
-				break loop
+				fmt.Printf("error executing query in worker %d: %v\n", worker, err)
+				stmt.Close()
+				continue loop
 			}
 			last, err := result.LastInsertId()
 			if err != nil {
-				fmt.Printf("error: %v, stopping worker %d\n", err, worker)
-				break loop
+				fmt.Printf("error getting last insert id in worker %d: %v\n", worker, err)
+				stmt.Close()
+				continue loop
 			}
 
+			stmt.Close()
 			fmt.Printf("worker=%d value=%d key=%d\n", worker, value, last)
 			responses <- last
 			value++
